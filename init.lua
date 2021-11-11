@@ -3,6 +3,7 @@ echo_pin = 2
 trig_pin = 3
 light_pin = 5
 
+use_sonar = false
 light_on = false
 
 if adc.force_init_mode(adc.INIT_ADC)
@@ -134,7 +135,6 @@ function measure(level, ts, evcount)
     local distance_mean = mean(samples)
     local s = stderr(samples)
     if s < max_stderr and distance_mean < distance_max and distance_mean > distance_min then
-      print("detected something")
       print("stder = " .. s)
       print("distance = " .. distance_mean)
       if not light_on then
@@ -166,12 +166,39 @@ function startup()
         sntp.sync(nil,
           function(sec, usec, server, info)
             print("sync'd")
-            tmr.create():alarm(61, tmr.ALARM_AUTO, trig)
-            gpio.trig(echo_pin, "both", measure)
+
+            tm = rtctime.epoch2cal(rtctime.get())
+
+            print(tm["hour"])
+            print(tm["min"])
+
+            if tm["hour"] >= 12 or tm["hour"] < 2 then
+              if tm["hour"] == 12 and tm["min"] < 30 then
+                return
+              end
+              turn_light_on()
+            end
+
+            if tm["hour"] >= 2 and tm["hour"] < 12 then
+              turn_light_off()
+            end
+
+            cron.schedule("0 02 * * *", function(e) -- 9 pm EST is 2 UTC
+              print("Turning light off")
+              turn_light_off()
+            end)
+
+            cron.schedule("30 12 * * *", function(e) -- 7:30 am EST is 12:30 UTC
+              print("Turning light on")
+              turn_light_on()
+            end)
+
+            if use_sonar then
+              tmr.create():alarm(61, tmr.ALARM_AUTO, trig)
+              gpio.trig(echo_pin, "both", measure)
+            end
           end,
         nil, 1)
-
-        print("Timer created")
 
         require("httpserver").createServer(80, function(req, res)
           print("+R", req.method, req.url, node.heap())
@@ -193,6 +220,8 @@ function startup()
                 turn_light_on()
               elseif req.url == "/off" then
                 turn_light_off()
+              elseif req.url == "/toggle_sonar" then
+                use_sonar = not use_sonar
               end
 
               res:send("The light is " .. (light_on and "on\n" or "off\n"))
@@ -218,6 +247,7 @@ wifi_got_ip_event = function(T)
   print("Startup will resume momentarily, you have 3 seconds to abort.")
   print("Waiting...")
   tmr.create():alarm(3000, tmr.ALARM_SINGLE, startup)
+  mdns.register("smartlight", {hardware='NodeMCU'})
 end
 
 wifi_disconnect_event = function(T)
