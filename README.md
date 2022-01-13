@@ -1,3 +1,6 @@
+# **This repository has moved to [https://git.wesk.tech/wes/esp-light](https://git.wesk.tech/wes/esp-light)**
+
+
 Lua code, scripts, and firmware for my smart light project.
 
 ## How to use
