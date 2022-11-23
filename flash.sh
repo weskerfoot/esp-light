@@ -12,7 +12,7 @@ function reset_flash() {
   esptool.py --port /dev/ttyUSB0 write_flash -fm dio 0x10000 firmware/0x10000.bin
 }
 
-reset_flash
+#reset_flash
 
 CONN_DELAY=1000
 

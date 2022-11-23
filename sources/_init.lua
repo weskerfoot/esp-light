@@ -7,7 +7,6 @@ lights = {}
 lights[green] = false
 lights[red] = false
 
-
 function display_table(t)
   print("table")
   for k, v in pairs(t) do
@@ -30,7 +29,8 @@ function make_timer(pin, interval, initial_duty_cycle)
   local direction = 1
   local delay = 0
   print("timer created!")
-  return tmr.create():alarm(interval, tmr.ALARM_AUTO, function()
+  local timer = tmr.create()
+  timer:register(interval, tmr.ALARM_AUTO, function()
     if delay > 0 then
       delay = delay - 1
       return
@@ -54,6 +54,7 @@ function make_timer(pin, interval, initial_duty_cycle)
     lights[pin] = true
     pwm.setduty(pin, duty_cycle_t)
   end)
+  return timer
 end
 
 pwm.setup(green, 500, 0)
@@ -61,8 +62,15 @@ pwm.setup(red, 500, 0)
 pwm.start(green)
 pwm.start(red)
 
-green_timer = make_timer(green, 50, 1)
-red_timer = make_timer(red, 50, 1023)
+timers = {}
+timers[green] = make_timer(green, 50, 1)
+timers[red] = make_timer(red, 50, 1023)
+timers[green]:start()
+timers[red]:start()
+
+function fade_light(pin)
+  timers[pin]:start()
+end
 
 function turn_light_on(pin, duty_cycle)
   if not lights[pin] then
@@ -114,8 +122,6 @@ end
 function extract_formdata(s)
   local cgi = {}
   for name, value in string.gmatch(s, "([^&=]+)=([^&=]+)") do
-    name = name
-    value = value
     cgi[name] = value
   end
   return cgi
@@ -129,6 +135,10 @@ function get_info(group)
   end
 
   return result .. "</tbody></table>"
+end
+
+function compose(f, g)
+  return function(x) f(g(x)) end
 end
 
 function gen_select(name, id, options)
@@ -182,6 +192,16 @@ function startup()
             if params["toggle"] ~= nil then
               toggle_light(pins[params["toggle"]])
             end
+          elseif req.url == "/toggle_mode" then
+            local params = extract_formdata(urldecode(chunk))
+            display_table(params)
+            if params["toggle_mode"] == "mode_manual" then
+              timers[green]:stop()
+              timers[red]:stop()
+            elseif params["toggle_mode"] == "mode_fade" then
+              timers[green]:start()
+              timers[red]:start()
+            end
           elseif req.url == "/add_job" then
             post_data = urldecode(chunk)
             if string.len(post_data) > 6 then
@@ -209,10 +229,10 @@ function startup()
             res:send_header("Content-Type", "text/html")
             res:send_header("Connection", "close")
 
-            local toggle_lights = gen_buttons("Toggle Lights", "toggle_lights", {["toggle_red"]="Red", ["toggle_green"]="Green"})
+            local toggle_mode = gen_form("Toggle Mode", "toggle_mode", {["mode_fade"]="Fade", ["mode_manual"]="Manual"}, gen_select)
             local toggle_lights_form = gen_form("Toggle Lights Form", "toggle", {["toggle_red"]="Red", ["toggle_green"]="Green"}, gen_select)
 
-            res:send("<style>.button{text-decoration:underline;}.body{padding:0; margin:0;}.par{display:flex;flex-direction:row;}.a{margin: auto;width:50%;}.b{margin: auto;width:50%;}</style><html><body><div class='par'><div class='a'><span>Uptime: ".. tostring(tmr.time()) .. " seconds</span>" .. toggle_lights_form .. toggle_lights .. "</div><div class='b'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. "</div></div></body></html>")
+            res:send("<style>.button{text-decoration:underline;}.body{padding:0; margin:0;}.par{display:flex;flex-direction:row;}.a{margin: auto;width:50%;}.b{margin: auto;width:50%;}</style><html><body><div class='par'><div class='a'><span>Uptime: ".. tostring(tmr.time()) .. " seconds</span>" .. toggle_lights_form .. toggle_mode .. "</div><div class='b'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. "</div></div></body></html>")
             res:send("\r\n")
           elseif req.url == "/toggle" then
             res:send(nil, 303)
@@ -235,6 +255,8 @@ end
 
 function connect_wifi()
     print("Trying to connect to wifi with captive portal")
+    wifi.sta.disconnect()
+    wifi.sta.clearconfig()
     enduser_setup.start(
     function()
       if wifi.sta.getip() ~= nil then 
