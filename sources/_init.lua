@@ -7,6 +7,14 @@ lights = {}
 lights[green] = false
 lights[red] = false
 
+-- cron job which checks if auto mode is enabled
+-- if auto mode is enabled, it cycles through various timers
+-- runs the current timer for one period (cron job runs once every period of time)
+-- then stops and unregisters that timer, and moves on to the next, etc
+-- if auto mode is disabled, it does nothing
+-- UI allows you to configure auto mode period maybe
+-- UI could also allow to configure the specific settings but this might be too much work
+
 function display_table(t)
   print("table")
   for k, v in pairs(t) do
@@ -57,18 +65,19 @@ function make_timer(pin, interval, initial_duty_cycle)
   return timer
 end
 
-pwm.setup(green, 500, 0)
-pwm.setup(red, 500, 0)
+-- pwm.setup(pin, frequency, duty cycle) -- max duty cycle is 1023, min 1
+pwm.setup(green, 500, 1023)
+pwm.setup(red, 500, 1023)
 pwm.start(green)
 pwm.start(red)
 
 timers = {}
-timers[green] = make_timer(green, 50, 1)
-timers[red] = make_timer(red, 50, 1023)
-timers[green]:start()
-timers[red]:start()
+timers[green] = make_timer(green, 10, 1)
+timers[red] = make_timer(red, 10, 1023)
+timers[green]:stop()
+timers[red]:stop()
 
-function fade_light(pin)
+function turn_on_fade(pin)
   timers[pin]:start()
 end
 
@@ -202,22 +211,6 @@ function startup()
               timers[green]:start()
               timers[red]:start()
             end
-          elseif req.url == "/add_job" then
-            post_data = urldecode(chunk)
-            if string.len(post_data) > 6 then
-              local a, b = string.find(post_data, "=")
-              local cron_expression = post_data:sub(a+1)
-
-              print(error_msg)
-            else
-              ran = false
-              error_msg = "invalid"
-            end
-
-            if not ran then
-              print("post_data = " .. post_data)
-              cron_error = error_msg
-            end
           elseif req.url == "/reboot" then
             node.restart()
           end
@@ -256,7 +249,7 @@ end
 function connect_wifi()
     print("Trying to connect to wifi with captive portal")
     wifi.sta.disconnect()
-    wifi.sta.clearconfig()
+    -- wifi.sta.clearconfig()
     enduser_setup.start(
     function()
       if wifi.sta.getip() ~= nil then 
