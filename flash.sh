@@ -1,4 +1,4 @@
-rm firmware/*bin
+rm -f firmware/*bin
 cp /home/wes/code/nodemcu-firmware/bin/*bin ./firmware
 rm -f sources/lfs.img
 cd sources && ./compile.sh
@@ -8,8 +8,8 @@ nodemcu-tool reset
 function reset_flash() {
   nodemcu-tool reset
   esptool.py --port /dev/ttyUSB0 erase_flash
-  esptool.py --port /dev/ttyUSB0 write_flash -fm dio 0x00000 firmware/0x00000.bin
-  esptool.py --port /dev/ttyUSB0 write_flash -fm dio 0x10000 firmware/0x10000.bin
+  esptool.py --port /dev/ttyUSB0 write_flash -fm qio 0x00000 firmware/0x00000.bin
+  esptool.py --port /dev/ttyUSB0 write_flash -fm qio 0x10000 firmware/0x10000.bin
 }
 
 #reset_flash

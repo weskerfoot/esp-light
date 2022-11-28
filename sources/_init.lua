@@ -7,21 +7,6 @@ lights = {}
 lights[green] = false
 lights[red] = false
 
--- cron job which checks if auto mode is enabled
--- if auto mode is enabled, it cycles through various timers
--- runs the current timer for one period (cron job runs once every period of time)
--- then stops and unregisters that timer, and moves on to the next, etc
--- if auto mode is disabled, it does nothing
--- UI allows you to configure auto mode period maybe
--- UI could also allow to configure the specific settings but this might be too much work
-
-function display_table(t)
-  print("table")
-  for k, v in pairs(t) do
-    print("k = " .. tostring(k), ", v = " .. tostring(v))
-  end
-end
-
 function calc_duty_cycle(duty_cycle_factor)
   if duty_cycle_factor <= 1 then
     return 1023
@@ -30,37 +15,79 @@ function calc_duty_cycle(duty_cycle_factor)
   end
 end
 
-function make_timer(pin, interval, initial_duty_cycle)
+function is_table(v)
+  local is_it_a_table, _ = pcall(function() return v["is_table"] end)
+  return is_it_a_table
+end
+
+function show_pair(key, value)
+  -- TODO handle case of array and then call back to show_list
+  if is_table(value) then
+    return "("..tostring(key) .. " . " .. tostring(show_table(value)) .. ")"
+  else
+    return "("..tostring(key) .. " . " .. tostring(value) .. ")"
+  end
+end
+
+function show_table(t)
+  result = ""
+  for key, value in pairs(t) do
+    result = result .. show_pair(key, value)
+  end
+  return "(" .. result .. ")"
+end
+
+function show_list(ts)
+  if is_table(12) or (not is_table({green=12})) then
+    return ""
+  end
+  result = ""
+  for _, t in ipairs(ts) do
+    if is_table(t) then
+      result = result .. show_table(t)
+    else
+      result = result .. tostring(t)
+    end
+  end
+  return "(" .. result .. ")"
+end
+
+function make_timer(params)
   -- interval is in milliseconds
   -- pin is the gpio number
-  local duty_cycle_t = initial_duty_cycle
-  local direction = 1
+  -- params {pin=pin, frequency=frequency, duty_cycle=duty_cycle, step=step, interval=interval, delay=delay}
+
+  local duty_cycle_t = params["duty_cycle"]
+  local direction = params["step"]
   local delay = 0
   print("timer created!")
+  print(duty_cycle_t)
   local timer = tmr.create()
-  timer:register(interval, tmr.ALARM_AUTO, function()
+  timer:register(params["interval"], tmr.ALARM_AUTO, function()
     if delay > 0 then
       delay = delay - 1
       return
     end
 
-    if duty_cycle_t >= 1023 then 
-      delay = 200
-      direction = -1
-    elseif duty_cycle_t <= 0 then
-      delay = 200
-      direction = 1
+    if (direction > 0 and ((duty_cycle_t + direction) >= 1023))  then
+      delay = params["delay"]
+      direction = -math.abs(direction)
     end
 
-    duty_cycle_t = duty_cycle_t + direction
+    if ((direction <= 0) and ((duty_cycle_t + direction) < 0)) then
+      delay = params["delay"]
+      direction = math.abs(direction)
+    end
 
     if delay > 0 then
       return
     end
 
+    duty_cycle_t = duty_cycle_t + direction
+
     -- if this is running then it's turned on
-    lights[pin] = true
-    pwm.setduty(pin, duty_cycle_t)
+    lights[params["pin"]] = true
+    pwm.setduty(params["pin"], duty_cycle_t)
   end)
   return timer
 end
@@ -71,31 +98,92 @@ pwm.setup(red, 500, 1023)
 pwm.start(green)
 pwm.start(red)
 
-timers = {}
-timers[green] = make_timer(green, 10, 1)
-timers[red] = make_timer(red, 10, 1023)
-timers[green]:stop()
-timers[red]:stop()
+timers = {red=false, green=false}
 
-function turn_on_fade(pin)
-  timers[pin]:start()
+-- cron job which checks if auto mode is enabled
+-- if auto mode is enabled, it cycles through various timers
+-- runs the current timer for one period (cron job runs once every period of time)
+-- then stops and unregisters that timer, and moves on to the next, etc
+-- if auto mode is disabled, it does nothing
+-- UI allows you to configure auto mode period maybe
+-- UI could also allow to configure the specific settings but this might be too much work
+
+auto_mode_enabled = true
+
+function make_timer_params(pin, duty_cycle, interval, frequency, step, delay)
+  duty_cycle = duty_cycle or 1023
+  interval = interval or 20
+  step = step or 1
+  frequency = frequency or 500
+  delay = delay or 200
+  return {pin=pin, frequency=frequency, duty_cycle=duty_cycle, step=step, interval=interval, delay=delay}
+end
+
+function unregister_timers()
+  if timers[green] then
+    timers[green]:unregister()
+  end
+  if timers[red] then
+    timers[red]:unregister()
+  end
+  duty_cycle = 1023
+  pwm.setduty(red, duty_cycle)
+  pwm.setduty(green, duty_cycle)
+end
+
+timer_states = {
+          {green=make_timer_params(green, 1022, 200, 1000, 1021, 5), red=make_timer_params(red, 1022, 200, 1000, -1021, 5)},
+          {green=make_timer_params(green, 1023, 5), red=make_timer_params(red, 1, 5)},
+          --{green=make_timer_params(green, 1022, 100, 1000, -1021, 5), red=make_timer_params(red, 1022, 100, 1000, 1021, 5)},
+          --{green=make_timer_params(green, 1023, 5, 1000), red=make_timer_params(red, 1, 5, 1000)},
+          --{green=make_timer_params(green, 1023, 5), red=make_timer_params(red, 1023, 5)},
+          --{green=make_timer_params(green, 1, 5), red=make_timer_params(red, 1023, 5)},
+          --{green=make_timer_params(green, 1), red=make_timer_params(red, 1023)},
+        }
+
+function start_auto_mode()
+  -- this is enabled by default
+  local current_state = 1
+  local number_of_states = table.getn(timer_states)
+  print("Making cronjob, number of states = " .. number_of_states)
+  cron.reset()
+  unregister_timers()
+  cron.schedule("*/1 * * * *", function(e)
+    if auto_mode_enabled then
+      print("Auto mode enabled, switching modes, current mode = " .. current_state)
+
+      unregister_timers()
+
+      -- TODO iter8 thru them instead
+      timers[green] = make_timer(timer_states[current_state]["green"])
+      timers[red] = make_timer(timer_states[current_state]["red"])
+      timers[green]:start()
+      timers[red]:start()
+
+      current_state = (current_state % number_of_states) + 1
+
+    end
+  end)
 end
 
 function turn_light_on(pin, duty_cycle)
-  if not lights[pin] then
+  if not lights[pin] and not auto_mode_enabled then
     lights[pin] = true
     pwm.setduty(pin, duty_cycle)
   end
 end
 
 function turn_light_off(pin)
-  if lights[pin] then
+  if lights[pin] and not auto_mode_enabled then
     pwm.setduty(pin, 0)
     lights[pin] = false
   end
 end
 
 function toggle_light(pin)
+  if auto_mode_enabled then
+    return
+  end
   print("Toggling " .. tostring(pin))
   local duty_cycle = calc_duty_cycle(1)
   print("duty_cycle = ".. duty_cycle)
@@ -178,6 +266,7 @@ function startup()
       nil,
       function(sec, usec, server, info)
         print('synced ntp ', sec, usec, server)
+        start_auto_mode()
       end,
       function()
         print('failed to sync ntp')
@@ -203,13 +292,12 @@ function startup()
             end
           elseif req.url == "/toggle_mode" then
             local params = extract_formdata(urldecode(chunk))
-            display_table(params)
             if params["toggle_mode"] == "mode_manual" then
-              timers[green]:stop()
-              timers[red]:stop()
-            elseif params["toggle_mode"] == "mode_fade" then
-              timers[green]:start()
-              timers[red]:start()
+              unregister_timers()
+              auto_mode_enabled = false
+            elseif params["toggle_mode"] == "mode_auto" then
+              start_auto_mode()
+              auto_mode_enabled = true
             end
           elseif req.url == "/reboot" then
             node.restart()
@@ -222,10 +310,10 @@ function startup()
             res:send_header("Content-Type", "text/html")
             res:send_header("Connection", "close")
 
-            local toggle_mode = gen_form("Toggle Mode", "toggle_mode", {["mode_fade"]="Fade", ["mode_manual"]="Manual"}, gen_select)
+            local toggle_mode = gen_form("Toggle Mode", "toggle_mode", {["mode_manual"]="Manual", ["mode_auto"]="Auto"}, gen_select)
             local toggle_lights_form = gen_form("Toggle Lights Form", "toggle", {["toggle_red"]="Red", ["toggle_green"]="Green"}, gen_select)
 
-            res:send("<style>.button{text-decoration:underline;}.body{padding:0; margin:0;}.par{display:flex;flex-direction:row;}.a{margin: auto;width:50%;}.b{margin: auto;width:50%;}</style><html><body><div class='par'><div class='a'><span>Uptime: ".. tostring(tmr.time()) .. " seconds</span>" .. toggle_lights_form .. toggle_mode .. "</div><div class='b'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. "</div></div></body></html>")
+            res:send("<style>.button{text-decoration:underline;}.body{padding:0; margin:0;}.par{display:flex;flex-direction:row;}.a{margin: auto;width:50%;}.b{margin: auto;width:50%;}</style><html><body><div class='par'><div class='a'><span>Uptime: ".. tostring(tmr.time()) .. " seconds</span>" .. toggle_lights_form .. toggle_mode .. "</div><div class='b'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. show_list(timer_states) .. "</div></div></body></html>")
             res:send("\r\n")
           elseif req.url == "/toggle" then
             res:send(nil, 303)
