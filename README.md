@@ -5,7 +5,9 @@ It supports motion activation (with a sonar sensor), as well as dimming and wifi
 ## How to use
 You can flash this to your esp8266 (with nodemcu on it), change the pin numbers correspondingly, and it should work, assuming you have some sort of MOSFET or PWM inputs hooked up.
 
-When started, it will create a WiFI network that you can connect to and input your regular WiFI credentials and select a network, then it will remember those credentials and connect over your regular network. I recommend giving it a static IP address, as the esp8266 does not have enough memory to run mDNS in this configuration without being unreliable I found.
+When started, it will create a WiFi network that you can connect to and input your regular WiFi credentials and select a network, then it will remember those credentials and connect over your regular network. I recommend giving it a static IP address, as the esp8266 does not have enough memory to run mDNS in this configuration without being unreliable I found.
+
+The web interface allows you to change the brightness as well as set a custom timeout for how long the lights will stay on without any motion detected.
 
 ### Photos
 #### Assembled with a custom 3D printed hook
