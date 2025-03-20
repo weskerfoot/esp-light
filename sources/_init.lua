@@ -1,19 +1,127 @@
 -- Never change these unless the board changes
-red = 7
-green = 5
+started = false
+light_pin = 5
+motion_pin = 7
 
-pins = {toggle_red=red, toggle_green=green}
-lights = {}
-lights[green] = false
-lights[red] = false
+--turn_off_timeout = 1000*60*1 -- for turning off if it triggered via sensor
+turn_off_timer = tmr.create()
+
+timeout_settings = {["turn_off_timeout"]=1000*60*30, ["turn_off_timeout_minutes"]=30}
+
+gpio.mode(motion_pin, gpio.INT)
+
+function set_turn_off_timeout(new_timeout)
+  if new_timeout > 0 and new_timeout < 1440 then
+    timeout_settings["turn_off_timeout_minutes"] = new_timeout
+    timeout_settings["turn_off_timeout"] = 1000*60*new_timeout
+  end
+end
 
 function calc_duty_cycle(duty_cycle_factor)
-  if duty_cycle_factor <= 1 then
-    return 1023
+  if duty_cycle_factor < 1 then
+    return 0
   else
     return 1023 / duty_cycle_factor
   end
 end
+
+global_duty_cycle = calc_duty_cycle(1)
+
+function debounce (func)
+	local last = 0
+	local delay = 500000
+
+	return function (...)
+		local now = tmr.now()
+    local delta = now - last
+
+    if delta < 0 then
+      delta = delta + 2147483647
+    end
+
+		if delta < delay then
+      return
+    end
+
+		last = now
+		return func(...)
+	end
+end
+
+-- pwm.setup(pin, frequency, duty cycle) -- max duty cycle is 1023, min 1
+pwm.setup(light_pin, 500, 1023)
+pwm.start(light_pin)
+
+current_mode = nil
+
+pins = {toggle_light_pin=light_pin}
+lights = {}
+
+if gpio.read(light_pin) == 1 then
+  lights[light_pin] = true
+else
+  lights[light_pin] = false
+end
+
+function turn_light_on(pin, duty_cycle, reset_timeout)
+  lights[pin] = true
+  pwm.setduty(pin, duty_cycle)
+  if reset_timeout then
+    turn_off_timer:stop()
+    turn_off_timer:unregister()
+  end
+end
+
+function to_percent(a, b)
+  return (a*b)/100
+end
+
+function get_duty_cycle_percentage(pin)
+  local d = pwm.getduty(pin)
+  return (d*100)/1023
+end
+
+function set_light_brightness(pin, percentage)
+  --print("percentage = " .. tostring(percentage))
+  local duty_cycle = to_percent(1023, percentage)
+  --print("set light to " .. tostring(duty_cycle))
+  pwm.setduty(pin, duty_cycle)
+  global_duty_cycle = duty_cycle
+  if duty_cycle > 0 then
+    lights[pin] = true
+  else
+    lights[pin] = false
+  end
+end
+
+function turn_light_off(pin)
+  if lights[pin] then
+    pwm.setduty(pin, 0)
+    lights[pin] = false
+  end
+end
+
+function toggle_light(pin)
+  --print("Toggling " .. tostring(pin))
+  if lights[pin] then
+    turn_light_off(pin)
+  else
+    turn_light_on(pin, global_duty_cycle, true)
+  end
+end
+
+function sensor_trigger_on(level, ts, evcount)
+  if level == gpio.HIGH and gpio.read(light_pin) == 0 then
+    --print("sensor pin is high")
+    turn_light_on(light_pin, global_duty_cycle, true)
+    turn_off_timer:register(timeout_settings["turn_off_timeout"], tmr.ALARM_SINGLE, function()
+      turn_light_off(light_pin)
+    end)
+    turn_off_timer:start()
+  end
+end
+
+gpio.trig(motion_pin, "up", sensor_trigger_on)
 
 function is_table(v)
   local is_it_a_table, _ = pcall(function() return v["is_table"] end)
@@ -38,7 +146,7 @@ function show_table(t)
 end
 
 function show_list(ts)
-  if is_table(12) or (not is_table({green=12})) then
+  if is_table(12) or (not is_table({light_pin=12})) then
     return ""
   end
   result = ""
@@ -50,148 +158,6 @@ function show_list(ts)
     end
   end
   return "(" .. result .. ")"
-end
-
-function make_timer(params)
-  -- interval is in milliseconds
-  -- pin is the gpio number
-  -- params {pin=pin, frequency=frequency, duty_cycle=duty_cycle, step=step, interval=interval, delay=delay}
-
-  local duty_cycle_t = params["duty_cycle"]
-  local direction = params["step"]
-  local delay = 0
-  print("timer created!")
-  print(duty_cycle_t)
-  local timer = tmr.create()
-  timer:register(params["interval"], tmr.ALARM_AUTO, function()
-    if delay > 0 then
-      delay = delay - 1
-      return
-    end
-
-    if (direction > 0 and ((duty_cycle_t + direction) >= 1023))  then
-      delay = params["delay"]
-      direction = -math.abs(direction)
-    end
-
-    if ((direction <= 0) and ((duty_cycle_t + direction) < 0)) then
-      delay = params["delay"]
-      direction = math.abs(direction)
-    end
-
-    if delay > 0 then
-      return
-    end
-
-    duty_cycle_t = duty_cycle_t + direction
-
-    -- if this is running then it's turned on
-    lights[params["pin"]] = true
-    pwm.setduty(params["pin"], duty_cycle_t)
-  end)
-  return timer
-end
-
--- pwm.setup(pin, frequency, duty cycle) -- max duty cycle is 1023, min 1
-pwm.setup(green, 500, 1023)
-pwm.setup(red, 500, 1023)
-pwm.start(green)
-pwm.start(red)
-
-timers = {red=false, green=false}
-
--- cron job which checks if auto mode is enabled
--- if auto mode is enabled, it cycles through various timers
--- runs the current timer for one period (cron job runs once every period of time)
--- then stops and unregisters that timer, and moves on to the next, etc
--- if auto mode is disabled, it does nothing
--- UI allows you to configure auto mode period maybe
--- UI could also allow to configure the specific settings but this might be too much work
-
-auto_mode_enabled = true
-
-function make_timer_params(pin, duty_cycle, interval, frequency, step, delay)
-  duty_cycle = duty_cycle or 1023
-  interval = interval or 20
-  step = step or 1
-  frequency = frequency or 500
-  delay = delay or 200
-  return {pin=pin, frequency=frequency, duty_cycle=duty_cycle, step=step, interval=interval, delay=delay}
-end
-
-function unregister_timers()
-  if timers[green] then
-    timers[green]:unregister()
-  end
-  if timers[red] then
-    timers[red]:unregister()
-  end
-  duty_cycle = 1023
-  pwm.setduty(red, duty_cycle)
-  pwm.setduty(green, duty_cycle)
-end
-
-timer_states = {
-          {green=make_timer_params(green, 1022, 200, 1000, 1021, 5), red=make_timer_params(red, 1022, 200, 1000, -1021, 5)},
-          {green=make_timer_params(green, 1023, 5), red=make_timer_params(red, 1, 5)},
-          --{green=make_timer_params(green, 1022, 100, 1000, -1021, 5), red=make_timer_params(red, 1022, 100, 1000, 1021, 5)},
-          --{green=make_timer_params(green, 1023, 5, 1000), red=make_timer_params(red, 1, 5, 1000)},
-          --{green=make_timer_params(green, 1023, 5), red=make_timer_params(red, 1023, 5)},
-          --{green=make_timer_params(green, 1, 5), red=make_timer_params(red, 1023, 5)},
-          --{green=make_timer_params(green, 1), red=make_timer_params(red, 1023)},
-        }
-
-function start_auto_mode()
-  -- this is enabled by default
-  local current_state = 1
-  local number_of_states = table.getn(timer_states)
-  print("Making cronjob, number of states = " .. number_of_states)
-  cron.reset()
-  unregister_timers()
-  cron.schedule("*/1 * * * *", function(e)
-    if auto_mode_enabled then
-      print("Auto mode enabled, switching modes, current mode = " .. current_state)
-
-      unregister_timers()
-
-      -- TODO iter8 thru them instead
-      timers[green] = make_timer(timer_states[current_state]["green"])
-      timers[red] = make_timer(timer_states[current_state]["red"])
-      timers[green]:start()
-      timers[red]:start()
-
-      current_state = (current_state % number_of_states) + 1
-
-    end
-  end)
-end
-
-function turn_light_on(pin, duty_cycle)
-  if not lights[pin] and not auto_mode_enabled then
-    lights[pin] = true
-    pwm.setduty(pin, duty_cycle)
-  end
-end
-
-function turn_light_off(pin)
-  if lights[pin] and not auto_mode_enabled then
-    pwm.setduty(pin, 0)
-    lights[pin] = false
-  end
-end
-
-function toggle_light(pin)
-  if auto_mode_enabled then
-    return
-  end
-  print("Toggling " .. tostring(pin))
-  local duty_cycle = calc_duty_cycle(1)
-  print("duty_cycle = ".. duty_cycle)
-  if lights[pin] then
-    turn_light_off(pin)
-  else
-    turn_light_on(pin, duty_cycle)
-  end
 end
 
 print("Booted up")
@@ -226,7 +192,8 @@ end
 
 function get_info(group)
   local info = node.info(group)
-  local result = "<table><thead><tr><th colspan='2'>" .. tostring(group) .. "</th></thead><tbody>"
+  local result = "<table class='table-auto'><thead><tr><th colspan='2'>" .. tostring(group) .. "</th></thead><tbody>"
+  result = result .. "<tr><td>Uptime: ".. tostring(tmr.time()) .. " seconds</td></tr>"
   for key, value in pairs(info) do
     result = result .. "<tr><td>" .. tostring(key) .. "</td><td>" .. tostring(value) .. "</td></tr>"
   end
@@ -239,24 +206,38 @@ function compose(f, g)
 end
 
 function gen_select(name, id, options)
-  local result = "<label for='" .. id .. "'>" .. name .. "</label><select name='" .. id .. "' id='" .. id .. "'>"
+  local result = "<label class='m-1 px-2' for='" .. id .. "'>" .. name .. "</label><select name='" .. id .. "' id='" .. id .. "'>"
   for key, value in pairs(options) do
-    result = result .. "<option value='" .. key .. "'>" .. value .. "</option>"
+    result = result .. "<option class='p-1 px-2' value='" .. key .. "'>" .. value .. "</option>"
   end
   return result .. "</select>"
 end
 
-function gen_form(name, endpoint, fields, gen_inputs)
-  local result = "<h2>" .. name .. "</h2><form action='/" .. endpoint .. "' method='post'>"
+function gen_range_select(name, id, options)
+  local min = options["min"]
+  local max = options["max"]
+  local value = options["value"]
+  return "<label class='m-1 px-2' for='" .. id .. "'>" .. name .. "</label><input class='min-w-min p-1 px-2' type='range' name='" .. id .. "' id='" .. id .. "' value='" .. value .. "' min='" .. min .. "' max='" .. max .. "'></input>"
+end
+
+function gen_num_select(name, id, options)
+  local min = options["min"]
+  local max = options["max"]
+  local value = options["value"]
+  return "<label class='m-1 px-2' for='" .. id .. "'>" .. name .. "</label><input class='w-20 p-1 px-2' type='number' name='" .. id .. "' id='" .. id .. "' value='" .. value .. "' min='" .. min .. "' max='" .. max .. "'></input>"
+end
+
+function gen_form(form_name, name, endpoint, fields, gen_inputs)
+  local result = "<div class='py-3 min-w-full'><h2 class='text-center font-serif text-lg'>" .. form_name .. "</h2><form class='py-8 text-center' action='/" .. endpoint .. "' method='post'>"
   result = result .. gen_inputs(name, endpoint, fields)
-  return result .. "<div class='form-example'><input type='submit' value='Submit'></div></form>"
+  return result .. "<input class='p-1 px-2 m-3 border-2 hover:bg-sky-100' type='submit' value='Submit'></form></div>"
 end
 
 function gen_buttons(name, endpoint, fields)
-  local result = "<h2>" .. name .. "</h2>"
+  local result = "<h2 class='text-center font-serif text-lg'>" .. name .. "</h2>"
   for key, value in pairs(fields) do
-    result = result .. "<form action='/" .. key .. "' method='post'>"
-    result = result .. "<button style='color:black;'>" .. value .. "</button><span style='color:black;'>" .. "status here" .. "</span></form>"
+    result = result .. "<form class='py-8 text-center' action='/" .. key .. "' method='post'>"
+    result = result .. "<button class='min-w-min p-1' style='color:black;'>" .. value .. "</button><span style='color:black;'>" .. "status here" .. "</span></form>"
   end
   return result
 end
@@ -266,7 +247,9 @@ function startup()
       nil,
       function(sec, usec, server, info)
         print('synced ntp ', sec, usec, server)
-        start_auto_mode()
+        if not started then
+          started = true
+        end
       end,
       function()
         print('failed to sync ntp')
@@ -290,17 +273,20 @@ function startup()
             if params["toggle"] ~= nil then
               toggle_light(pins[params["toggle"]])
             end
-          elseif req.url == "/toggle_mode" then
-            local params = extract_formdata(urldecode(chunk))
-            if params["toggle_mode"] == "mode_manual" then
-              unregister_timers()
-              auto_mode_enabled = false
-            elseif params["toggle_mode"] == "mode_auto" then
-              start_auto_mode()
-              auto_mode_enabled = true
-            end
           elseif req.url == "/reboot" then
             node.restart()
+          elseif req.url == "/set_brightness" then
+            local params = extract_formdata(urldecode(chunk))
+            if params["set_brightness"] ~= nil then
+              local percentage = tonumber(params["set_brightness"])
+              set_light_brightness(light_pin, percentage)
+            end
+          elseif req.url == "/set_timeout" then
+            local params = extract_formdata(urldecode(chunk))
+            if params["set_timeout"] ~= nil then
+              local new_timeout = tonumber(params["set_timeout"])
+              set_turn_off_timeout(new_timeout)
+            end
           end
         end
         if not chunk then
@@ -310,16 +296,31 @@ function startup()
             res:send_header("Content-Type", "text/html")
             res:send_header("Connection", "close")
 
-            local toggle_mode = gen_form("Toggle Mode", "toggle_mode", {["mode_manual"]="Manual", ["mode_auto"]="Auto"}, gen_select)
-            local toggle_lights_form = gen_form("Toggle Lights Form", "toggle", {["toggle_red"]="Red", ["toggle_green"]="Green"}, gen_select)
+            local current_dc_percent = tostring(get_duty_cycle_percentage(light_pin))
 
-            res:send("<style>.button{text-decoration:underline;}.body{padding:0; margin:0;}.par{display:flex;flex-direction:row;}.a{margin: auto;width:50%;}.b{margin: auto;width:50%;}</style><html><body><div class='par'><div class='a'><span>Uptime: ".. tostring(tmr.time()) .. " seconds</span>" .. toggle_lights_form .. toggle_mode .. "</div><div class='b'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. show_list(timer_states) .. "</div></div></body></html>")
+            local toggle_lights_form = gen_form("Lights", "Toggle Lights", "toggle", {["toggle_light_pin"]="Light"}, gen_select)
+            local set_brightness_form = gen_form("Brightness", "Set Brightness (%)", "set_brightness", {["min"]="0", ["max"]="100", ["value"]=current_dc_percent}, gen_range_select)
+            local set_timeout_form = gen_form("Timeout", "Set Timeout (minutes)", "set_timeout", {["min"]="0", ["max"]="1440", ["value"]=timeout_settings["turn_off_timeout_minutes"]}, gen_num_select)
+
+            res:send("<style>.button{text-decoration:underline;}</style><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><script src='https://cdn.tailwindcss.com'></script></head><body><h1 class='text-xl text-center uppercase font-bold'>Light Config</h1><div class='wy-10 place-content-around grid md:grid-cols-2 gap-3'><div class='a border-solid border-2 justify-center items-center'>" .. toggle_lights_form .. set_brightness_form .. set_timeout_form .. "</div><div class='b justify-center border-solid border-2 items-center'>" .. get_info("hw") .. get_info("build_config") .. get_info("sw_version") .. "</div></div></body></html>")
             res:send("\r\n")
           elseif req.url == "/toggle" then
             res:send(nil, 303)
             res:send_header("Location", "/")
             res:send_header("Connection", "close")
             res:send("switching light\r\n")
+            res:send("\r\n")
+          elseif req.url == "/set_brightness" then
+            res:send(nil, 303)
+            res:send_header("Location", "/")
+            res:send_header("Connection", "close")
+            res:send("setting brightness\r\n")
+            res:send("\r\n")
+          elseif req.url == "/set_timeout" then
+            res:send(nil, 303)
+            res:send_header("Location", "/")
+            res:send_header("Connection", "close")
+            res:send("setting timeout\r\n")
             res:send("\r\n")
           else
             res:send(nil, 303)
@@ -335,15 +336,23 @@ function startup()
 end
 
 function connect_wifi()
+    print("Turning lights off")
+
+    if gpio.read(light_pin) == 1 then
+      lights[light_pin] = true
+    else
+      lights[light_pin] = false
+    end
+
+    turn_light_off(light_pin)
+
+    --wifi.sta.clearconfig()
     print("Trying to connect to wifi with captive portal")
-    wifi.sta.disconnect()
-    -- wifi.sta.clearconfig()
-    enduser_setup.start(
+    enduser_setup.start("Reading Light",
     function()
-      if wifi.sta.getip() ~= nil then 
-        print("Connected to WiFi as:" .. wifi.sta.getip())
-        tmr.create():alarm(3000, tmr.ALARM_SINGLE, startup)
-      end
+      print("in connection function")
+      --print("Connected to WiFi as:" .. wifi.sta.getip())
+      tmr.create():alarm(3000, tmr.ALARM_SINGLE, startup)
     end,
     function(err, str)
       print("enduser_setup: Err #" .. err .. ": " .. str)
